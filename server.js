@@ -1,9 +1,15 @@
+// Bootstrap proxy support so Node.js uses the environment proxy for all https calls
+process.env.GLOBAL_AGENT_HTTP_PROXY = process.env.HTTP_PROXY || process.env.http_proxy || '';
+process.env.GLOBAL_AGENT_HTTPS_PROXY = process.env.HTTPS_PROXY || process.env.https_proxy || '';
+try { require('global-agent/bootstrap'); } catch(e) { /* proxy not available, continue */ }
+
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const https = require("https");
+const http = require("http");
 const { getDb, query, run, runReturning } = require("./db");
 
 const app = express();
@@ -29,44 +35,33 @@ function optionalAuth(req, res, next) {
 
 // ── Claude API helper ──────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userMessage) {
+  // Use child_process to call curl — ensures proxy/SSL work identically to system curl
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+    const { execFile } = require("child_process");
+    const payload = JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
     });
-
-    const options = {
-      hostname: "api.anthropic.com",
-      path: "/v1/messages",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": CLAUDE_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "Content-Length": Buffer.byteLength(body),
-      },
-    };
-
-    const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          resolve(parsed.content?.[0]?.text || "");
-        } catch (e) {
-          reject(e);
-        }
-      });
+    const args = [
+      "-s", "--max-time", "30",
+      "-H", "Content-Type: application/json",
+      "-H", `anthropic-version: 2023-06-01`,
+      "-H", `x-api-key: ${CLAUDE_API_KEY}`,
+      "-d", payload,
+      "https://api.anthropic.com/v1/messages"
+    ];
+    execFile("curl", args, { maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(err);
+      try {
+        const parsed = JSON.parse(stdout);
+        if (parsed.error) return reject(new Error(parsed.error.message));
+        resolve(parsed.content?.[0]?.text || "");
+      } catch(e) { reject(new Error("Parse error: " + stdout.slice(0, 100))); }
     });
-    req.on("error", reject);
-    req.write(body);
-    req.end();
   });
 }
-
 
 // ── Smart Synthesis (fallback when no Claude API key) ──────────────────────
 function smartSynthesis(question, internalResults) {
