@@ -386,19 +386,20 @@ function seedData(d) {
 function query(sql, params = []) {
   const stmt = db.prepare(sql);
   const result = stmt.getAsObject ? [] : [];
-  stmt.bind(params);
+  stmt.bind(sanitize(params));
   while (stmt.step()) result.push(stmt.getAsObject());
   stmt.free();
   return result;
 }
 
+function sanitize(p) { return p.map(v => v === undefined ? null : v); }
 function run(sql, params = []) {
-  db.run(sql, params);
+  db.run(sql, sanitize(params));
   saveDb(db);
 }
 
 function runReturning(sql, params = []) {
-  db.run(sql, params);
+  db.run(sql, sanitize(params));
   const id = db.exec("SELECT last_insert_rowid() as id")[0]?.values[0][0];
   saveDb(db);
   return id;
